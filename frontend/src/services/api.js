@@ -105,9 +105,16 @@ export const api = {
         headers: {
           'Content-Type': 'application/json',
         },
+        // Add a timeout to prevent hanging
+        signal: AbortSignal.timeout(5000) // 5 second timeout
       });
 
-      return response.ok;
+      if (response.ok) {
+        // Try to parse the response to ensure it's valid
+        const data = await response.json();
+        return true;
+      }
+      return false;
     } catch (error) {
       console.error('Health check failed:', error);
       return false;
