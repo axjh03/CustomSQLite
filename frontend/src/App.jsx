@@ -168,8 +168,10 @@ export default function App() {
     try {
       const result = await api.executeQuery(sqlQuery, selectedDatabase);
       console.log('Query result:', result);
+      console.log('Logs from result:', result.logs);
       setQueryResult(result);
       setLogs(result.logs || []);
+      console.log('Set logs to:', result.logs || []);
       
       // Show success message for INSERT, UPDATE, DELETE operations
       if (result.message) {
@@ -453,7 +455,7 @@ export default function App() {
           {logs.length > 0 && (
             <div className="terminal-section">
               <div className="terminal-header">
-                <span className="terminal-title">Backend Logs</span>
+                <span className="terminal-title">Backend Logs ({logs.length} entries)</span>
                 <button 
                   className="terminal-clear" 
                   onClick={() => setLogs([])}
@@ -469,6 +471,15 @@ export default function App() {
                   </div>
                 ))}
               </div>
+            </div>
+          )}
+          
+          {/* Debug: Show logs state */}
+          {process.env.NODE_ENV === 'development' && (
+            <div style={{ marginTop: '10px', padding: '10px', background: '#f0f0f0', fontSize: '12px' }}>
+              <strong>Debug - Logs State:</strong> {logs.length} entries
+              <br />
+              <strong>Logs:</strong> {JSON.stringify(logs.slice(0, 3))}...
             </div>
           )}
         </div>

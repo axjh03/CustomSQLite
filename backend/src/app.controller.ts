@@ -75,6 +75,7 @@ export class AppController {
     try {
       console.log('Received query:', query);
       console.log('Using database file:', dbFile);
+      console.log('Log capture test - this should appear in logs array');
     
     // Support SELECT * FROM <table> [LIMIT <n>] queries
     const selectLimitMatch = query.match(
@@ -217,6 +218,8 @@ export class AppController {
       if (limit !== undefined) {
         values = values.slice(0, limit);
       }
+      console.log('Final logs array length:', logs.length);
+      console.log('Final logs array:', logs);
       return {
         columns,
         values,
