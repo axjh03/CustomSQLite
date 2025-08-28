@@ -14,23 +14,16 @@ const databases = {
       'INSERT INTO apples (name, color) VALUES ("Pink Lady", "pink");',
     ],
   },
-  'chinook.db': {
-    name: 'Chinook',
-    description: 'A sample database for a music store.',
-    tables: [
-      'artists',
-      'albums',
-      'tracks',
-      'customers',
-      'invoices',
-      'invoice_items',
-    ],
+  'companies.db': {
+    name: 'Companies Database',
+    description: 'A test database with companies table and country index (~7MB).',
+    tables: ['companies'],
     suggestions: [
-      'SELECT * FROM artists LIMIT 5;',
-      "SELECT Name FROM artists WHERE ArtistId = 10;",
-      "SELECT * FROM albums WHERE ArtistId = 15;",
-      "SELECT artists.Name, albums.Title FROM artists JOIN albums ON artists.ArtistId = albums.ArtistId LIMIT 5;",
-      "SELECT COUNT(*) AS NumberOfTracks FROM tracks;",
+      'SELECT * FROM companies LIMIT 10;',
+      'SELECT name, country FROM companies WHERE country = "USA";',
+      'SELECT * FROM companies WHERE country = "Germany";',
+      'SELECT name, industry FROM companies LIMIT 20;',
+      'SELECT * FROM companies WHERE industry = "Technology";',
     ],
   },
 };
