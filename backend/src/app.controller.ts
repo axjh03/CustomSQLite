@@ -15,6 +15,92 @@ export class AppController {
     return this.appService.getHello();
   }
 
+  /**
+   * Recursively collect all rows from a page and its child pages
+   */
+  private collectAllRowsFromPage(database: Database, page: Page, columns: string[], limit?: number): any[][] {
+    const allValues: any[][] = [];
+    
+    // If this is a leaf page, collect the data rows
+    if (page.header.type === 13) {
+      const leafValues = page.cells
+        .filter((cell) => cell && cell.record && cell.record.body && cell.record.body.columns)
+        .map((cell) =>
+          cell.record.body.columns.slice(0, columns.length),
+        );
+      allValues.push(...leafValues);
+      
+      // Early termination if we have enough rows
+      if (limit && allValues.length >= limit) {
+        return allValues.slice(0, limit);
+      }
+    }
+    
+    // If this is an interior page, recursively process child pages
+    if (page.header.type === 5) {
+      const childPages = page.childPageNumbers();
+      
+      for (const childPageNum of childPages) {
+        try {
+          const childPage = database.getPage(childPageNum);
+          
+          // Recursively collect rows from this child page
+          const childValues = this.collectAllRowsFromPage(database, childPage, columns, limit);
+          allValues.push(...childValues);
+          
+          // Early termination if we have enough rows
+          if (limit && allValues.length >= limit) {
+            return allValues.slice(0, limit);
+          }
+        } catch (error) {
+          console.warn(`Error reading child page ${childPageNum}:`, error);
+        }
+      }
+    }
+    
+    return allValues;
+  }
+
+  /**
+   * Recursively collect all rows from a page and its child pages, handling rowid aliases
+   */
+  private collectAllRowsWithRowId(database: Database, page: Page, schemaCols: string[], isFirstColRowIdAlias: boolean): any[][] {
+    const allRows: any[][] = [];
+    
+    // If this is a leaf page, collect the data rows
+    if (page.header.type === 13) {
+      const leafRows = page.cells
+        .filter((cell) => cell && cell.record && cell.record.body && cell.record.body.columns)
+        .map((cell) => {
+          const recordCols = cell.record.body.columns;
+          const fullRow = isFirstColRowIdAlias
+            ? [cell.rowid, ...recordCols]
+            : recordCols;
+          return fullRow.slice(0, schemaCols.length);
+        });
+      allRows.push(...leafRows);
+    }
+    
+    // If this is an interior page, recursively process child pages
+    if (page.header.type === 5) {
+      const childPages = page.childPageNumbers();
+      
+      for (const childPageNum of childPages) {
+        try {
+          const childPage = database.getPage(childPageNum);
+          
+          // Recursively collect rows from this child page
+          const childRows = this.collectAllRowsWithRowId(database, childPage, schemaCols, isFirstColRowIdAlias);
+          allRows.push(...childRows);
+        } catch (error) {
+          console.warn(`Error reading child page ${childPageNum}:`, error);
+        }
+      }
+    }
+    
+    return allRows;
+  }
+
   @Get('dbinfo')
   async getDbInfo(
     @Query('db') dbFile: string = 'sample.db',
@@ -90,17 +176,17 @@ export class AppController {
       console.log(`Database file size: ${buffer.length} bytes`);
       const database = new Database(buffer);
       
-      console.log('Database page size:', database.header.pageSize);
-      console.log(
-        'Number of cells in first page:',
-        database.page.header.numberOfCells,
-      );
+      // console.log('Database page size:', database.header.pageSize);
+      // console.log(
+      //   'Number of cells in first page:',
+      //   database.page.header.numberOfCells,
+      // );
       
-      // List all tables in sqlite_master for debugging
+      // List all tables in sqlite_master for debugging (commented out for performance)
       const allTables = database.page.cells
         .filter((cell) => cell && cell.record && cell.record.body && cell.record.body.columns)
         .map((cell, index) => {
-          console.log(`Cell ${index}: columns =`, cell.record.body.columns);
+          // console.log(`Cell ${index}: columns =`, cell.record.body.columns);
           const columns = cell.record.body.columns;
           const tableName = columns[2] || '';
           // Clean up table name - remove any non-printable characters
@@ -114,7 +200,7 @@ export class AppController {
             type: columns[0] || '',
           };
         });
-      console.log('sqlite_master tables:', allTables);
+      // console.log('sqlite_master tables:', allTables);
       // Find the table in sqlite_master
       const tableCell = database.page.cells.find((cell) => {
         if (!cell || !cell.record || !cell.record.body || !cell.record.body.columns) {
@@ -157,14 +243,14 @@ export class AppController {
       }
       // The root page number is in column 3 (index 3)
       const rootPageRaw = tableCell.record.body.columns[3] as string | number;
-      console.log(`Root page raw value: ${rootPageRaw} (type: ${typeof rootPageRaw})`);
-      console.log(`All columns for table cell:`, tableCell.record.body.columns);
-      console.log(`Column 3 hex: ${typeof rootPageRaw === 'number' ? rootPageRaw.toString(16) : 'N/A'}`);
+      // console.log(`Root page raw value: ${rootPageRaw} (type: ${typeof rootPageRaw})`);
+      // console.log(`All columns for table cell:`, tableCell.record.body.columns);
+      // console.log(`Column 3 hex: ${typeof rootPageRaw === 'number' ? rootPageRaw.toString(16) : 'N/A'}`);
       const rootPageNumber =
         typeof rootPageRaw === 'number'
           ? rootPageRaw
           : parseInt(rootPageRaw, 10);
-      console.log(`Parsed root page number: ${rootPageNumber}`);
+      // console.log(`Parsed root page number: ${rootPageNumber}`);
       if (!rootPageNumber) {
         console.log(
           `Could not find root page for table '${tableName}'. Table entry:`,
@@ -180,8 +266,8 @@ export class AppController {
       }
       // Each page is 4096 bytes, first page is special (header is 100 bytes)
       const pageSize = database.header.pageSize;
-      console.log(`Page ${rootPageNumber} would start at offset: ${(rootPageNumber - 1) * pageSize + (rootPageNumber === 1 ? 100 : 0)}`);
-      console.log(`Page ${rootPageNumber} would end at offset: ${(rootPageNumber - 1) * pageSize + pageSize + (rootPageNumber === 1 ? 100 : 0)}`);
+      // console.log(`Page ${rootPageNumber} would start at offset: ${(rootPageNumber - 1) * pageSize + (rootPageNumber === 1 ? 100 : 0)}`);
+      // console.log(`Page ${rootPageNumber} would end at offset: ${(rootPageNumber - 1) * pageSize + pageSize + (rootPageNumber === 1 ? 100 : 0)}`);
       const pageOffset =
         (rootPageNumber - 1) * pageSize + (rootPageNumber === 1 ? 100 : 0);
       const tablePageBuffer = buffer.subarray(
@@ -189,6 +275,13 @@ export class AppController {
         pageOffset + pageSize,
       );
       const tablePage = new Page(tablePageBuffer, rootPageNumber, pageSize);
+      console.log(`Table page type: ${tablePage.header.type} (5=interior, 13=leaf)`);
+      // console.log(`Table page cells: ${tablePage.header.numberOfCells}`);
+      
+      // Log cell pointer information for debugging (commented out for performance)
+      // const cellPointers = tablePage.cellPointerArray;
+      // console.log(`Cell pointers: [${cellPointers.join(', ')}]`);
+      
       // The CREATE TABLE statement is in column 4 (index 4)
       const createStmtRaw = tableCell.record.body.columns[4];
       if (typeof createStmtRaw !== 'string') {
@@ -209,17 +302,31 @@ export class AppController {
           .split(',')
           .map((s) => s.trim().split(' ')[0].replace(/['"`]/g, ''));
       }
-      // Get all rows
-      let values = tablePage.cells
-        .filter((cell) => cell && cell.record && cell.record.body && cell.record.body.columns)
-        .map((cell) =>
-          cell.record.body.columns.slice(0, columns.length),
-        );
-      if (limit !== undefined) {
-        values = values.slice(0, limit);
+      // Get all rows from all pages
+      let allValues: any[][] = [];
+      
+      // First, try to get rows from the current page
+      // Only process cells if this is a leaf page (type 13)
+      if (tablePage.header.type === 13) {
+        const currentPageValues = tablePage.cells
+          .filter((cell) => cell && cell.record && cell.record.body && cell.record.body.columns && cell.record.body.columns.length > 0)
+          .map((cell) =>
+            cell.record.body.columns.slice(0, columns.length),
+          );
+        allValues.push(...currentPageValues);
       }
-      console.log('Final logs array length:', logs.length);
-      console.log('Final logs array:', logs);
+      
+      // If this is an interior page (type 5), we need to read child pages recursively
+      if (tablePage.header.type === 5) {
+        console.log('Interior page detected, reading child pages recursively...');
+        allValues = this.collectAllRowsFromPage(database, tablePage, columns, limit);
+      }
+      
+      // Limit is now handled in the recursive function for early termination
+      
+      console.log(`Total rows found: ${allValues.length}`);
+      const values = allValues;
+
       return {
         columns,
         values,
@@ -266,6 +373,8 @@ export class AppController {
         pageOffset + pageSize,
       );
       const tablePage = new Page(tablePageBuffer, rootPageNumber, pageSize);
+      console.log(`Table page type: ${tablePage.header.type} (5=interior, 13=leaf)`);
+      console.log(`Table page cells: ${tablePage.header.numberOfCells}`);
 
       const createStmt = tableCell.record.body.columns[4] as string;
       const colMatch = /\(([^)]+)\)/.exec(createStmt);
@@ -307,17 +416,33 @@ export class AppController {
         };
       }
 
-      const filteredRows = tablePage.cells
-        .filter((cell) => cell && cell.record && cell.record.body && cell.record.body.columns)
-        .map((cell) => {
-          // If the first column is a rowid alias, prepend the cell's rowid
-          // to the columns from the record body to form the complete row.
-          const recordCols = cell.record.body.columns;
-          const fullRow = isFirstColRowIdAlias
-            ? [cell.rowid, ...recordCols]
-            : recordCols;
-          return fullRow.slice(0, schemaCols.length);
-        })
+      // Get all rows from all pages
+      let allRows: any[][] = [];
+      
+      // First, try to get rows from the current page
+      // Only process cells if this is a leaf page (type 13)
+      if (tablePage.header.type === 13) {
+        const currentPageRows = tablePage.cells
+          .filter((cell) => cell && cell.record && cell.record.body && cell.record.body.columns)
+          .map((cell) => {
+            // If the first column is a rowid alias, prepend the cell's rowid
+            // to the columns from the record body to form the complete row.
+            const recordCols = cell.record.body.columns;
+            const fullRow = isFirstColRowIdAlias
+              ? [cell.rowid, ...recordCols]
+              : recordCols;
+            return fullRow.slice(0, schemaCols.length);
+          });
+        allRows.push(...currentPageRows);
+      }
+      
+      // If this is an interior page (type 5), we need to read child pages recursively
+      if (tablePage.header.type === 5) {
+        console.log('Interior page detected in WHERE clause, reading child pages recursively...');
+        allRows = this.collectAllRowsWithRowId(database, tablePage, schemaCols, isFirstColRowIdAlias);
+      }
+      
+      const filteredRows = allRows
         .filter((row) => row && row[whereIdx] !== undefined && String(row[whereIdx]) === whereVal)
         .map((row) => colIdxs.map((idx) => row[idx]));
 

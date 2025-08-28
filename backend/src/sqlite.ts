@@ -5,6 +5,7 @@ export class Database {
   header: DatabaseHeader;
   page: Page;
   pageSize: number;
+  private pageCache: Map<number, Page> = new Map();
   /**
    * @param {Buffer} buffer
    */
@@ -25,17 +26,24 @@ export class Database {
     // FIX: Ensure subarray does not go out of bounds
     const endOffset = Math.min(offset + this.pageSize, this.buffer.length);
     
-    console.log(`Reading page ${pageNumber}: offset=${offset}, endOffset=${endOffset}, buffer.length=${this.buffer.length}`);
+    // Only log page reading for debugging if needed
+    // console.log(`Reading page ${pageNumber}: offset=${offset}, endOffset=${endOffset}, buffer.length=${this.buffer.length}`);
     
     if (offset >= this.buffer.length) {
       console.error(`Page ${pageNumber} offset ${offset} is beyond buffer length ${this.buffer.length}`);
       return Buffer.alloc(0);
     }
     
-    return this.buffer.subarray(offset, endOffset);
+    const pageBuffer = this.buffer.subarray(offset, endOffset);
+    return pageBuffer;
   }
 
   getPage(pageNumber: number): Page {
+    // Check cache first
+    if (this.pageCache.has(pageNumber)) {
+      return this.pageCache.get(pageNumber)!;
+    }
+    
     // FIX: Check if pageNumber is valid
     if (
       pageNumber < 1 ||
@@ -49,7 +57,11 @@ export class Database {
     const pageBuffer = this.readPageBuffer(pageNumber);
     // For page 1, the B-tree page starts at offset 100 within the page buffer
     const pageOffset = pageNumber === 1 ? 100 : 0;
-    return new Page(pageBuffer, pageNumber, this.pageSize, pageOffset);
+    const page = new Page(pageBuffer, pageNumber, this.pageSize, pageOffset);
+    
+    // Cache the page
+    this.pageCache.set(pageNumber, page);
+    return page;
   }
 
   /** Recursively collect all leaf table pages starting from root */
@@ -95,6 +107,8 @@ export class Page {
   pageNumber: number;
   pageSize: number;
   pageOffset: number; // Offset within the buffer where the B-tree page starts
+  private _cellPointerArray: number[] | null = null; // Cache for cell pointer array
+  private _cells: Cell[] | null = null; // Cache for cells array
   /**
    * @param {Buffer} buffer - Full page buffer
    * @param {number} pageNumber - Page number
@@ -109,9 +123,16 @@ export class Page {
     this.header = new PageHeader(pageBuffer);
     this.pageNumber = pageNumber;
     this.pageSize = pageSize;
+    
+
   }
 
   get cellPointerArray(): number[] {
+    // Return cached result if available
+    if (this._cellPointerArray !== null) {
+      return this._cellPointerArray;
+    }
+    
     const result: number[] = [];
     // Leaf table header 8 bytes, interior table header 12 bytes
     const headerSize = this.header.type === 5 ? 12 : 8;
@@ -142,15 +163,25 @@ export class Page {
       // FIX: Validate pointer is within reasonable bounds
       if (pointer >= 0 && pointer < this.buffer.length) {
         result.push(pointer);
+
       } else {
-        console.warn(`Invalid cell pointer ${pointer} at offset ${pointerOffset}. Skipping.`);
+        console.warn(`Invalid cell pointer ${pointer} at offset ${pointerOffset} (buffer length: ${this.buffer.length}). Skipping.`);
       }
     }
-    console.log(`Cell pointers: [${result.join(', ')}]`);
+    // Only log cell pointers for debugging if needed
+    // console.log(`Cell pointers: [${result.join(', ')}]`);
+    
+    // Cache the result
+    this._cellPointerArray = result;
     return result;
   }
 
   get cells(): Cell[] {
+    // Return cached result if available
+    if (this._cells !== null) {
+      return this._cells;
+    }
+    
     const result: Cell[] = [];
     const pointers = this.cellPointerArray;
     for (const pointer of pointers) {
@@ -161,8 +192,16 @@ export class Page {
         );
         continue;
       }
-      result.push(new Cell(this.buffer, pointer));
+      try {
+        const cell = new Cell(this.buffer, pointer, this.header.type);
+        result.push(cell);
+      } catch (error) {
+        console.warn(`Error creating cell at pointer ${pointer}: ${error}`);
+      }
     }
+    
+    // Cache the result
+    this._cells = result;
     return result;
   }
 
@@ -254,12 +293,16 @@ class Cell {
   recordSize: number;
   rowid: number;
   record: Record;
+  pageType: number; // Track the page type this cell belongs to
+  
   /**
    * @param {Buffer} buffer
    * @param {number} offset
+   * @param {number} pageType - The type of page this cell belongs to (5=interior, 13=leaf)
    */
-  constructor(buffer: Buffer, offset: number) {
+  constructor(buffer: Buffer, offset: number, pageType: number = 13) {
     this.buffer = buffer;
+    this.pageType = pageType;
     this.reader = new BinaryReader(buffer);
     this.reader.setPos(offset);
 
@@ -279,7 +322,30 @@ class Cell {
     // FIX: Add bounds checking for varint reading
     try {
       this.recordSize = this.reader.readVarint();
-      this.rowid = this.reader.readVarint(); // Rowid comes after record size for leaf table cells
+      
+      // For interior table pages (type 5), cells contain child page number + rowid
+      // For leaf table pages (type 13), cells contain rowid + record
+      if (this.pageType === 5) {
+        // Interior page cell: child page number (4 bytes) + rowid (varint)
+        if (this.reader.pos + 4 > buffer.length) {
+          console.warn(`Not enough bytes to read child page number at offset ${this.reader.pos}`);
+          this.rowid = 0;
+          this.record = new Record(Buffer.alloc(0));
+          return;
+        }
+        const childPageNumber = this.buffer.readUInt32BE(this.reader.pos);
+        this.reader.skip(4);
+        this.rowid = this.reader.readVarint();
+        
+        // For interior pages, we don't need to parse a record since they don't contain data
+        // Just create an empty record to avoid errors
+        const recordBuffer = Buffer.alloc(0);
+        this.record = new Record(recordBuffer);
+        return;
+      } else {
+        // Leaf page cell: rowid + record
+        this.rowid = this.reader.readVarint();
+      }
     } catch (error) {
       console.warn(
         `Error reading varints at offset ${offset}: ${error}. Creating empty record.`,
@@ -334,6 +400,14 @@ class Record {
    */
   constructor(buffer: Buffer) {
     this.buffer = buffer;
+    
+    // FIX: Handle empty buffers
+    if (!buffer || buffer.length === 0) {
+      this.header = new RecordHeader(new BinaryReader(Buffer.alloc(0)));
+      this.body = new RecordBody(new BinaryReader(Buffer.alloc(0)), this.header);
+      return;
+    }
+    
     const headerReader = new BinaryReader(this.buffer);
     this.header = new RecordHeader(headerReader);
 
@@ -380,23 +454,37 @@ class RecordHeader {
 
     // FIX: A varint's size contributes to the total header size.
     // We need to read it first to know how many bytes it took.
-    const { value: headerSize, bytesRead: headerSizeBytesRead } =
-      this.reader.readVarintWithBytesRead();
-    this.size = headerSize;
-    this.serialTypes = [];
+    try {
+      const { value: headerSize, bytesRead: headerSizeBytesRead } =
+        this.reader.readVarintWithBytesRead();
+      this.size = headerSize;
+      this.serialTypes = [];
 
-    const headerContentEndPos = headerStart + headerSize;
-
-    // Read serial types until we reach the end of the declared header area
-    while (this.reader.pos < headerContentEndPos) {
-      if (this.reader.pos >= this.reader.buffer.length) {
-        console.warn(
-          'Reached end of buffer while reading record header serial types (prematurely).',
-        );
-        break;
+      // FIX: Validate header size is reasonable
+      if (headerSize < 0 || headerSize > this.reader.buffer.length) {
+        console.warn(`Invalid header size ${headerSize}. Creating empty header.`);
+        this.size = 0;
+        this.serialTypes = [];
+        return;
       }
-      const serialType = this.reader.readVarint();
-      this.serialTypes.push(serialType);
+
+      const headerContentEndPos = headerStart + headerSize;
+
+      // Read serial types until we reach the end of the declared header area
+      while (this.reader.pos < headerContentEndPos) {
+        if (this.reader.pos >= this.reader.buffer.length) {
+          console.warn(
+            'Reached end of buffer while reading record header serial types (prematurely).',
+          );
+          break;
+        }
+        const serialType = this.reader.readVarint();
+        this.serialTypes.push(serialType);
+      }
+    } catch (error) {
+      console.warn(`Error reading record header: ${error}. Creating empty header.`);
+      this.size = 0;
+      this.serialTypes = [];
     }
   }
 }
@@ -409,6 +497,13 @@ class RecordBody {
    */
   constructor(reader: BinaryReader, header: RecordHeader) {
     this.reader = reader;
+    
+    // FIX: Handle empty or invalid headers gracefully
+    if (!header || header.serialTypes.length === 0) {
+      this.columns = [];
+      return;
+    }
+    
     this.columns = this.readColumns(header);
   }
 
@@ -416,9 +511,10 @@ class RecordBody {
     const result: (string | number | null | Buffer)[] = [];
 
     for (const serialType of header.serialTypes) {
-      console.log(
-        `Reading column: serialType=${serialType}, reader.pos=${this.reader.pos}, buffer.length=${this.reader.buffer.length}`,
-      );
+      // Only log column reading for debugging if needed
+      // console.log(
+      //   `Reading column: serialType=${serialType}, reader.pos=${this.reader.pos}, buffer.length=${this.reader.buffer.length}`,
+      // );
       if (serialType === 0) {
         result.push(null);
         continue;
@@ -521,7 +617,8 @@ class RecordBody {
         // text – return as string
         const decoder = new TextDecoder();
         const decodedText = decoder.decode(bytes);
-        console.log(`Decoded text: "${decodedText}" (${bytes.length} bytes, hex: ${bytes.toString('hex')})`);
+        // Only log decoded text for debugging if needed
+        // console.log(`Decoded text: "${decodedText}" (${bytes.length} bytes, hex: ${bytes.toString('hex')})`);
         result.push(decodedText);
       }
     }
@@ -560,8 +657,13 @@ class BinaryReader {
    * Handles up to 9 bytes.
    */
   readVarint = (): number => {
-    const { value } = this.readVarintWithBytesRead();
-    return value;
+    try {
+      const { value } = this.readVarintWithBytesRead();
+      return value;
+    } catch (error) {
+      console.warn(`Error reading varint at position ${this.pos}: ${error}`);
+      return 0;
+    }
   };
 
   /**
@@ -571,6 +673,13 @@ class BinaryReader {
   readVarintWithBytesRead = (): { value: number; bytesRead: number } => {
     let result = 0n;
     let bytesRead = 0;
+    
+    // FIX: Check if we have any bytes to read
+    if (this.pos >= this.buffer.length) {
+      console.warn(`Cannot read varint: already at end of buffer (pos ${this.pos})`);
+      return { value: 0, bytesRead: 0 };
+    }
+    
     for (let i = 0; i < 9; i++) {
       if (this.pos >= this.buffer.length) {
         console.warn(`Reached end of buffer while reading varint at pos ${this.pos}.`);
@@ -578,17 +687,23 @@ class BinaryReader {
         // Return what we've read so far.
         return { value: Number(result), bytesRead: bytesRead };
       }
-      const byte = BigInt(this.buffer.readUint8(this.pos));
-      this.pos++; // Advance position
-      bytesRead++;
+      
+      try {
+        const byte = BigInt(this.buffer.readUint8(this.pos));
+        this.pos++; // Advance position
+        bytesRead++;
 
-      if (i === 8) { // Last byte (9th byte)
-        result = (result << 8n) | byte; // All 8 bits of the 9th byte are data
-      } else {
-        result = (result << 7n) | (byte & 0x7fn);
-        if ((byte & 0x80n) === 0n) {
-            break; // Most significant bit is 0, end of varint
+        if (i === 8) { // Last byte (9th byte)
+          result = (result << 8n) | byte; // All 8 bits of the 9th byte are data
+        } else {
+          result = (result << 7n) | (byte & 0x7fn);
+          if ((byte & 0x80n) === 0n) {
+              break; // Most significant bit is 0, end of varint
+          }
         }
+      } catch (error) {
+        console.warn(`Error reading byte at position ${this.pos}: ${error}`);
+        return { value: Number(result), bytesRead: bytesRead };
       }
     }
     
