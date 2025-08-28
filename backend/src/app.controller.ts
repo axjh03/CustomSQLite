@@ -52,8 +52,29 @@ export class AppController {
     @Query('db') dbFile: string = 'sample.db',
   ): Promise<any> {
     const { query } = body;
-    console.log('Received query:', query);
-    console.log('Using database file:', dbFile);
+    const logs: string[] = [];
+    
+    // Override console.log to capture logs
+    const originalLog = console.log;
+    const originalWarn = console.warn;
+    const originalError = console.error;
+    
+    console.log = (...args) => {
+      logs.push(`[LOG] ${args.join(' ')}`);
+      originalLog(...args);
+    };
+    console.warn = (...args) => {
+      logs.push(`[WARN] ${args.join(' ')}`);
+      originalWarn(...args);
+    };
+    console.error = (...args) => {
+      logs.push(`[ERROR] ${args.join(' ')}`);
+      originalError(...args);
+    };
+    
+    try {
+      console.log('Received query:', query);
+      console.log('Using database file:', dbFile);
     
     // Support SELECT * FROM <table> [LIMIT <n>] queries
     const selectLimitMatch = query.match(
@@ -75,24 +96,29 @@ export class AppController {
       );
       
       // List all tables in sqlite_master for debugging
-      const allTables = database.page.cells.map((cell, index) => {
-        console.log(`Cell ${index}: columns =`, cell.record.body.columns);
-        const columns = cell.record.body.columns;
-        const tableName = columns[2] || '';
-        // Clean up table name - remove any non-printable characters
-        const cleanTableName =
-          typeof tableName === 'string'
-            ? tableName.replace(/[^\x20-\x7E]/g, '')
-            : '';
-        return {
-          name: cleanTableName,
-          rootPage: columns[3] || '',
-          type: columns[0] || '',
-        };
-      });
+      const allTables = database.page.cells
+        .filter((cell) => cell && cell.record && cell.record.body && cell.record.body.columns)
+        .map((cell, index) => {
+          console.log(`Cell ${index}: columns =`, cell.record.body.columns);
+          const columns = cell.record.body.columns;
+          const tableName = columns[2] || '';
+          // Clean up table name - remove any non-printable characters
+          const cleanTableName =
+            typeof tableName === 'string'
+              ? tableName.replace(/[^\x20-\x7E]/g, '')
+              : '';
+          return {
+            name: cleanTableName,
+            rootPage: columns[3] || '',
+            type: columns[0] || '',
+          };
+        });
       console.log('sqlite_master tables:', allTables);
       // Find the table in sqlite_master
       const tableCell = database.page.cells.find((cell) => {
+        if (!cell || !cell.record || !cell.record.body || !cell.record.body.columns) {
+          return false;
+        }
         const columns = cell.record.body.columns;
         const cellTableName = columns[2] || '';
         // Clean up table name for comparison
@@ -120,12 +146,13 @@ export class AppController {
       });
       if (!tableCell) {
         console.log(`Table '${tableName}' not found in sqlite_master.`);
-        return {
-          message: `Table '${tableName}' not found`,
-          columns: [],
-          values: [],
-          debug: allTables,
-        };
+              return {
+        message: `Table '${tableName}' not found`,
+        columns: [],
+        values: [],
+        debug: allTables,
+        logs,
+      };
       }
       // The root page number is in column 3 (index 3)
       const rootPageRaw = tableCell.record.body.columns[3] as string | number;
@@ -147,6 +174,7 @@ export class AppController {
           columns: [],
           values: [],
           debug: allTables,
+          logs,
         };
       }
       // Each page is 4096 bytes, first page is special (header is 100 bytes)
@@ -168,6 +196,7 @@ export class AppController {
           columns: [],
           values: [],
           debug: allTables,
+          logs,
         };
       }
       const createStmt = createStmtRaw;
@@ -180,9 +209,11 @@ export class AppController {
           .map((s) => s.trim().split(' ')[0].replace(/['"`]/g, ''));
       }
       // Get all rows
-      let values = tablePage.cells.map((cell) =>
-        cell.record.body.columns.slice(0, columns.length),
-      );
+      let values = tablePage.cells
+        .filter((cell) => cell && cell.record && cell.record.body && cell.record.body.columns)
+        .map((cell) =>
+          cell.record.body.columns.slice(0, columns.length),
+        );
       if (limit !== undefined) {
         values = values.slice(0, limit);
       }
@@ -190,6 +221,7 @@ export class AppController {
         columns,
         values,
         message: `Query executed successfully. ${values.length} rows returned.`,
+        logs,
       };
     }
 
@@ -207,14 +239,16 @@ export class AppController {
       const buffer = await readFile(dbFile);
       const database = new Database(buffer);
       const tableCell = database.page.cells.find(
-        (cell) => cell.record.body.columns[2] === tableName,
+        (cell) => cell && cell.record && cell.record.body && cell.record.body.columns && 
+                  cell.record.body.columns[2] === tableName,
       );
       if (!tableCell) {
-        return {
-          message: `Table '${tableName}' not found`,
-          columns: [],
-          values: [],
-        };
+              return {
+        message: `Table '${tableName}' not found`,
+        columns: [],
+        values: [],
+        logs,
+      };
       }
       const rootPageRaw = tableCell.record.body.columns[3] as string | number;
       const rootPageNumber =
@@ -237,6 +271,7 @@ export class AppController {
           message: 'Could not parse table schema',
           columns: [],
           values: [],
+          logs,
         };
       }
       const schemaCols = colMatch[1]
@@ -255,6 +290,7 @@ export class AppController {
           message: `Column '${whereCol}' not found`,
           columns: [],
           values: [],
+          logs,
         };
       }
 
@@ -264,10 +300,12 @@ export class AppController {
           message: 'One or more selected columns not found',
           columns: [],
           values: [],
+          logs,
         };
       }
 
       const filteredRows = tablePage.cells
+        .filter((cell) => cell && cell.record && cell.record.body && cell.record.body.columns)
         .map((cell) => {
           // If the first column is a rowid alias, prepend the cell's rowid
           // to the columns from the record body to form the complete row.
@@ -277,14 +315,22 @@ export class AppController {
             : recordCols;
           return fullRow.slice(0, schemaCols.length);
         })
-        .filter((row) => String(row[whereIdx]) === whereVal)
+        .filter((row) => row && row[whereIdx] !== undefined && String(row[whereIdx]) === whereVal)
         .map((row) => colIdxs.map((idx) => row[idx]));
 
       return {
         columns: selectedCols,
         values: filteredRows,
         message: `Query executed successfully. ${filteredRows.length} rows returned.`,
+        logs,
       };
+    }
+
+    } finally {
+      // Restore original console functions
+      console.log = originalLog;
+      console.warn = originalWarn;
+      console.error = originalError;
     }
 
     // ... fallback to previous implementation or error for unsupported queries ...
@@ -293,6 +339,7 @@ export class AppController {
         'Only SELECT * FROM <table> [LIMIT <n>] queries are supported for now',
       columns: [],
       values: [],
+      logs,
     };
   }
 }

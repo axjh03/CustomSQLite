@@ -68,7 +68,8 @@ export const api = {
         return {
           columns: result.columns,
           values: result.values,
-          message: result.message || `Query executed successfully. ${result.values.length} rows returned.`
+          message: result.message || `Query executed successfully. ${result.values.length} rows returned.`,
+          logs: result.logs || []
         };
       }
       // Fallback for old or unexpected formats
@@ -76,21 +77,24 @@ export const api = {
         return {
           columns: result.data.columns,
           values: result.data.rows,
-          message: `Query executed successfully. ${result.data.rows.length} rows returned.`
+          message: `Query executed successfully. ${result.data.rows.length} rows returned.`,
+          logs: result.logs || []
         };
       }
       else if (Array.isArray(result.data)) {
         return {
           columns: result.data.length > 0 ? Object.keys(result.data[0]) : [],
           values: result.data,
-          message: `Query executed successfully. ${result.data.length} rows returned.`
+          message: `Query executed successfully. ${result.data.length} rows returned.`,
+          logs: result.logs || []
         };
       }
       // For non-SELECT queries that don't return rows
       return {
         columns: [],
         values: [],
-        message: result.message || 'Query executed successfully.'
+        message: result.message || 'Query executed successfully.',
+        logs: result.logs || []
       };
     } catch (error) {
       console.error('API Error:', error);

@@ -36,6 +36,7 @@ export default function App() {
   const [queryResult, setQueryResult] = useState(null);
   const [error, setError] = useState(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [logs, setLogs] = useState([]);
   const [showBackendModal, setShowBackendModal] = useState(false);
   const [backendStatus, setBackendStatus] = useState('checking'); // 'checking', 'starting', 'ready', 'error'
   const [connectionAttempts, setConnectionAttempts] = useState(0);
@@ -145,6 +146,7 @@ export default function App() {
     setSqlQuery(databases[databaseKey].suggestions[0]);
     setQueryResult(null);
     setError(null);
+    setLogs([]);
   };
 
   const handleQuerySuggestionClick = (query) => {
@@ -162,10 +164,12 @@ export default function App() {
     }
     setIsLoading(true);
     setError(null);
+    setLogs([]);
     try {
       const result = await api.executeQuery(sqlQuery, selectedDatabase);
       console.log('Query result:', result);
       setQueryResult(result);
+      setLogs(result.logs || []);
       
       // Show success message for INSERT, UPDATE, DELETE operations
       if (result.message) {
@@ -444,6 +448,29 @@ export default function App() {
               <div className="empty-state">Run a query to see results here.</div>
             )}
           </div>
+          
+          {/* Terminal/Log Display */}
+          {logs.length > 0 && (
+            <div className="terminal-section">
+              <div className="terminal-header">
+                <span className="terminal-title">Backend Logs</span>
+                <button 
+                  className="terminal-clear" 
+                  onClick={() => setLogs([])}
+                  title="Clear logs"
+                >
+                  Clear
+                </button>
+              </div>
+              <div className="terminal-content">
+                {logs.map((log, index) => (
+                  <div key={index} className="log-line">
+                    {log}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>

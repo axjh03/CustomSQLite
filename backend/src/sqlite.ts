@@ -126,7 +126,7 @@ export class Page {
       console.warn(
         `Adjusting number of cells from ${this.header.numberOfCells} to ${maxCells}`,
       );
-      this.header.numberOfCells = maxCells; // Temporarily adjust for this page
+      this.header.numberOfCells = Math.max(0, maxCells); // Ensure non-negative
     }
 
     for (let i = 0; i < this.header.numberOfCells; i++) {
@@ -139,7 +139,12 @@ export class Page {
         break;
       }
       const pointer = this.buffer.readUint16BE(pointerOffset);
-      result.push(pointer);
+      // FIX: Validate pointer is within reasonable bounds
+      if (pointer >= 0 && pointer < this.buffer.length) {
+        result.push(pointer);
+      } else {
+        console.warn(`Invalid cell pointer ${pointer} at offset ${pointerOffset}. Skipping.`);
+      }
     }
     console.log(`Cell pointers: [${result.join(', ')}]`);
     return result;
@@ -270,28 +275,33 @@ class Cell {
     }
 
     const initialPos = this.reader.pos; // Save initial position for calculating available bytes
-    this.recordSize = this.reader.readVarint();
-    this.rowid = this.reader.readVarint(); // Rowid comes after record size for leaf table cells
+    
+    // FIX: Add bounds checking for varint reading
+    try {
+      this.recordSize = this.reader.readVarint();
+      this.rowid = this.reader.readVarint(); // Rowid comes after record size for leaf table cells
+    } catch (error) {
+      console.warn(
+        `Error reading varints at offset ${offset}: ${error}. Creating empty record.`,
+      );
+      this.recordSize = 0;
+      this.rowid = 0;
+      this.record = new Record(Buffer.alloc(0));
+      return;
+    }
 
     const recordStart = this.reader.pos; // This is the start of the record HEADER
-    const totalCellContentSize = recordStart - initialPos + this.recordSize; // Varints + Record Content
 
-    // The actual cell content includes the varint encoded recordSize and rowid,
-    // plus the record body. The cell pointer points to the start of this content.
-    // The `recordSize` read by the varint refers to the size of the record payload (header + body).
-    // So, total bytes from 'offset' should be at least (current reader.pos - offset) + recordSize
-    const availableBytesFromPointer = buffer.length - offset;
-
-    // FIX: Re-evaluate the record size check. The recordSize is the size of the *payload*
-    // meaning the serialized header + the column data.
-    // The total size of the cell entry at `offset` is:
-    // (varint_size_for_recordSize) + (varint_size_for_rowid) + recordSize (actual payload)
-
-    // The `recordSize` variable holds the size of the record header + body.
-    // We need to ensure that `offset + (size_of_record_size_varint) + (size_of_rowid_varint) + recordSize`
-    // does not exceed the buffer length.
-    // The `reader.pos` is already at the start of the record's payload (header + body).
-    // So, we just need to ensure `recordSize` fits in the remaining buffer.
+    // FIX: Validate record size is reasonable
+    if (this.recordSize < 0 || this.recordSize > buffer.length) {
+      console.warn(
+        `Invalid record size ${this.recordSize} at offset ${offset}. Creating empty record.`,
+      );
+      this.recordSize = 0;
+      this.rowid = 0;
+      this.record = new Record(Buffer.alloc(0));
+      return;
+    }
 
     const actualPayloadSize = this.recordSize; // This is the total size of header + body
 
@@ -328,11 +338,18 @@ class Record {
     this.header = new RecordHeader(headerReader);
 
     // FIX: Check if header was successfully parsed before proceeding to body
-    if (!this.header || this.header.size === 0 && this.header.serialTypes.length === 0 && this.buffer.length > 0) {
+    if (!this.header || (this.header.size === 0 && this.header.serialTypes.length === 0 && this.buffer.length > 0)) {
         // If header parsing failed, the record is likely corrupt or incomplete.
         // Initialize body with empty columns or handle error.
         this.body = new RecordBody(new BinaryReader(Buffer.alloc(0)), this.header); // Pass an empty buffer
         return;
+    }
+
+    // FIX: Ensure headerReader position is valid before creating body reader
+    if (headerReader.pos >= this.buffer.length) {
+      console.warn('Header reader position is beyond buffer bounds. Creating empty body.');
+      this.body = new RecordBody(new BinaryReader(Buffer.alloc(0)), this.header);
+      return;
     }
 
     // The body starts after the header, which means after the headerReader's final position
@@ -574,6 +591,14 @@ class BinaryReader {
         }
       }
     }
+    
+    // FIX: Validate the result is reasonable
+    const value = Number(result);
+    if (value < 0 || value > Number.MAX_SAFE_INTEGER) {
+      console.warn(`Varint value ${value} is out of reasonable range. Clamping.`);
+      return { value: Math.max(0, Math.min(value, Number.MAX_SAFE_INTEGER)), bytesRead };
+    }
+    
     return { value: Number(result), bytesRead: bytesRead };
   };
 }
